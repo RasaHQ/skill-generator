@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rasa Skill Generator</title>
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-yaml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-python.min.js"></script>
+    <style>
+        pre[class*="language-"] {
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const CodeBlock = ({ code, language }) => {
+            const [copied, setCopied] = useState(false);
+
+            useEffect(() => {
+                Prism.highlightAll();
+            }, [code]);
+
+            const copyToClipboard = () => {
+                navigator.clipboard.writeText(code);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            };
+
+            return (
+                <div className="relative mt-4">
+                    <pre className="bg-gray-100 p-4 rounded-md overflow-x-auto">
+                        <code className={`language-${language}`}>{code}</code>
+                    </pre>
+                    <button
+                        onClick={copyToClipboard}
+                        className="absolute top-2 right-2 p-2 bg-white rounded-md shadow-sm hover:bg-gray-100 text-xs font-medium text-gray-600"
+                    >
+                        {copied ? "Copied!" : "Copy"}
+                    </button>
+                </div>
+            );
+        };
+
+        const RasaSkillGenerator = () => {
+            const [skillDescription, setSkillDescription] = useState('');
+            const [apiKey, setApiKey] = useState('');
+            const [generatedContent, setGeneratedContent] = useState(null);
+            const [isLoading, setIsLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [isRefining, setIsRefining] = useState(false);
+            const [refinementInstructions, setRefinementInstructions] = useState('');
+
+            useEffect(() => {
+                const savedApiKey = localStorage.getItem('openaiApiKey');
+                if (savedApiKey) {
+                    setApiKey(savedApiKey);
+                }
+            }, []);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setIsLoading(true);
+                setError(null);
+
+                localStorage.setItem('openaiApiKey', apiKey);
+
+                try {
+                    const prompt = isRefining ? getRefinementPrompt() : getFreshStartPrompt();
+                    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${apiKey}`
+                        },
+                        body: JSON.stringify({
+                            model: "gpt-4o",
+                            messages: [{
+                                role: "user",
+                                content: prompt
+                            }]
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to generate content');
+                    }
+
+                    const data = await response.json();
+                    setGeneratedContent(data.choices[0].message.content);
+                } catch (err) {
+                    console.error('Full error object:', err);
+                    console.error('Error name:', err.name);
+                    console.error('Error message:', err.message);
+                    console.error('Error stack:', err.stack);
+                    setError(err.toString());
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            const getFreshStartPrompt = () => {
+                return `# Rasa CALM Flow and Domain YAML Generator
+
+You are an expert in creating Rasa CALM flows and domain YAML configurations. Your task is to generate these YAML files based on a user's description of a conversational skill. The user may not be familiar with Rasa, so it's crucial to interpret their requirements accurately and create a well-structured, functional Rasa configuration.
+
+## Input
+You will receive a description of a conversational skill. This description will be inserted where you see [USER_SKILL_DESCRIPTION] in this prompt.
+
+## Output
+Generate two YAML configurations:
+1. A Rasa CALM flow YAML
+2. A corresponding Rasa domain YAML
+
+Ensure that both YAMLs are complete, well-structured, and compatible with each other.
+If needed, also generate:
+3. Custom action code (python)
+
+## Example
+Here's an example of a skill description and the corresponding YAML outputs and custom action code
+
+Skill Description: "Create a skill for transferring money. It should ask for the recipient and amount, check the user has enough balance, and then confirm with the user before finalizing the transfer."
+
+CALM Flow YAML:
+\`\`\`yaml
+flows:
+  transfer_money:
+    description: This flow lets users send money to friends and family.
+    steps:
+      - collect: recipient
+      - collect: amount
+        description: the number of US dollars to send
+      - action: action_check_sufficient_funds
+        next:
+          - if: not slots.has_sufficient_funds
+            then:
+              - action: utter_insufficient_funds
+                next: END
+          - else: final_confirmation
+      - collect: final_confirmation
+        id: final_confirmation
+        next:
+          - if: not slots.final_confirmation
+            then:
+              - action: utter_transfer_cancelled
+                next: END
+          - else: transfer_successful
+      - action: utter_transfer_complete
+        id: transfer_successful
+\`\`\`
+
+Domain YAML:
+\`\`\`yaml
+actions:
+  - action_check_sufficient_funds
+
+slots:
+  recipient:
+    type: Text
+    mappings:
+      - type: from_llm
+  has_sufficient_funds:
+    type: bool
+    mappings:
+      - type: custom
+responses:
+  utter_ask_recipient:
+    - text: "Who would you like to send money to?"
+  utter_ask_final_confirmation:
+    - text: "Please confirm: you want to transfer {amount} to {recipient}?"
+  utter_transfer_cancelled:
+    - text: "Your transfer has been cancelled."
+  utter_insufficient_funds:
+    - text: "You do not have enough funds to make this transaction."
+\`\`\`
+
+Custom Action:
+\`\`\`python
+from typing import Any, Text, Dict, List
+from rasa_sdk import Action, Tracker
+from rasa_sdk.executor import CollectingDispatcher
+from rasa_sdk.events import SlotSet
+
+class ActionCheckSufficientFunds(Action):
+    def name(self) -> Text:
+        return "action_check_sufficient_funds"
+
+    def run(self, dispatcher: CollectingDispatcher,
+            tracker: Tracker,
+            domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        # hard-coded balance for tutorial purposes. in production this
+        # would be retrieved from a database or an API
+        balance = 1000
+        transfer_amount = tracker.get_slot("amount")
+        has_sufficient_funds = transfer_amount <= balance
+        return [SlotSet("has_sufficient_funds", has_sufficient_funds)]
+\`\`\`
+
+## Guidelines for CALM Flow YAML:
+- Start with \`flows:\` followed by an indented skill name
+- Include a \`description:\` for the skill
+- Use \`steps:\` to outline the conversation flow
+- Implement \`collect:\` steps for gathering information
+- Use \`action:\` steps for custom actions
+- Implement conditional logic with \`if:\`, \`then:\`, and \`else:\` where appropriate
+- Use \`next:\` to define the flow between steps
+- The content after \`then:\` or \`else:\` can be: the id of another step defined in the flow, a list of steps, or an END
+- End the flow with an appropriate action or message
+
+## Guidelines for Domain YAML:
+- Include all necessary \`actions:\`
+- Define all required \`slots:\` with appropriate types. Type should be one of 'float', 'bool', 'text', or 'categorical'
+- Slots filled by a 'collect' step should have mapping 'from_llm' and slots set by custom actions should have a 'custom' mapping
+- Provide \`responses:\` for all bot turns
+
+## Guidelines for Custom Actions
+- Ensure all actions mentioned in the flow are properly defined
+- Use hard-coded values to return, adding a comment to explain these should be fetched from the relevant API
+- The run() method of the custom action should return the required SlotSet events that will determine the next steps in the business logic of the flow. 
+
+## Important Notes:
+- Ensure that the flow logic is coherent and follows a natural conversation pattern
+- All custom actions in the flow should be listed in the domain's \`actions:\` section
+- All slots collected in the flow should be defined in the domain's \`slots:\` section
+- Provide appropriate \`utter_\` responses for each user interaction
+- Use realistic and appropriate names for actions, slots, and responses
+- Consider error handling and alternative conversation paths
+- Aim for a balance between simplicity and functionality
+
+Now, please generate Rasa CALM flow and domain YAML configurations, as well as mocked custom actions with hard-coded return values for the following skill description:
+
+${skillDescription}
+
+Provide the YAML configurations and custom action code, followed by a brief explanation of the key components and any assumptions made during the creation process. Finally, illustrate what a conversation with this bot might look like as a USER: / BOT: transcript`;
+            };
+
+            const getRefinementPrompt = () => {
+                return `# Rasa CALM Flow and Domain YAML Refinement
+
+You are an expert in creating and refining Rasa CALM flows and domain YAML configurations. Your task is to update the existing YAML files based on the user's refinement instructions. The user may not be familiar with Rasa, so it's crucial to interpret their requirements accurately and create a well-structured, functional Rasa configuration.
+
+## Input
+You will receive:
+1. The current Rasa CALM flow YAML
+2. The current Rasa domain YAML
+3. Any custom action code
+4. The user's refinement instructions
+
+## Output
+Generate updated versions of:
+1. The Rasa CALM flow YAML
+2. The Rasa domain YAML
+3. Any necessary custom action code
+
+Ensure that all YAMLs are complete, well-structured, and compatible with each other.
+
+## Current Rasa CALM Flow YAML
+\`\`\`yaml
+${generatedContent.match(/```yaml\n([\s\S]*?)```/)[1]}
+\`\`\`
+
+## Current Rasa Domain YAML
+\`\`\`yaml
+${generatedContent.match(/```yaml\n([\s\S]*?)```/g)[1].replace(/```yaml\n/, '')}
+\`\`\`
+
+## Current Custom Action Code (if any)
+\`\`\`python
+${generatedContent.match(/```python\n([\s\S]*?)```/) ? generatedContent.match(/```python\n([\s\S]*?)```/)[1] : 'No custom action code provided.'}
+\`\`\`
+
+## User's Refinement Instructions
+${refinementInstructions}
+
+## Guidelines for CALM Flow YAML:
+- Start with \`flows:\` followed by an indented skill name
+- Include a \`description:\` for the skill
+- Use \`steps:\` to outline the conversation flow
+- Implement \`collect:\` steps for gathering information
+- Use \`action:\` steps for custom actions
+- Implement conditional logic with \`if:\`, \`then:\`, and \`else:\` where appropriate
+- Use \`next:\` to define the flow between steps
+- The content after \`then:\` or \`else:\` can be: the id of another step defined in the flow, a list of steps, or an END
+- End the flow with an appropriate action or message
+
+## Guidelines for Domain YAML:
+- Include all necessary \`actions:\`
+- Define all required \`slots:\` with appropriate types. Type should be one of 'float', 'bool', 'text', or 'categorical'
+- Slots filled by a 'collect' step should have mapping 'from_llm' and slots set by custom actions should have a 'custom' mapping
+- Provide \`responses:\` for all bot turns
+
+## Guidelines for Custom Actions
+- Ensure all actions mentioned in the flow are properly defined
+- Use hard-coded values to return, adding a comment to explain these should be fetched from the relevant API
+- The run() method of the custom action should return the required SlotSet events that will determine the next steps in the business logic of the flow. 
+
+## Important Notes:
+- Ensure that the flow logic is coherent and follows a natural conversation pattern
+- All custom actions in the flow should be listed in the domain's \`actions:\` section
+- All slots collected in the flow should be defined in the domain's \`slots:\` section
+- Provide appropriate \`utter_\` responses for each user interaction
+- Use realistic and appropriate names for actions, slots, and responses
+- Consider error handling and alternative conversation paths
+- Aim for a balance between simplicity and functionality
+
+Now, please update the Rasa CALM flow and domain YAML configurations, as well as any necessary custom action code, based on the user's refinement instructions.
+
+Provide the updated YAML configurations and custom action code, followed by a brief explanation of the changes made and any new assumptions. Finally, illustrate what a conversation with this updated bot might look like as a USER: / BOT: transcript`;
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+                    <div className="max-w-3xl mx-auto">
+                        <div className="bg-white shadow sm:rounded-lg">
+                            <div className="px-4 py-5 sm:p-6">
+                                <h1 className="text-lg font-semibold text-gray-900 mb-4">Rasa Skill Generator</h1>
+                                <p className="text-sm text-gray-600 mb-6">Generate or refine Rasa CALM flow and domain YAML configurations based on your skill description.</p>
+                                <form onSubmit={handleSubmit} className="space-y-6">
+                                    {generatedContent && (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Mode
+                                            </label>
+                                            <div className="mt-2 space-x-4">
+                                                <label className="inline-flex items-center">
+                                                    <input
+                                                        type="radio"
+                                                        className="form-radio h-4 w-4 text-indigo-600 transition duration-150 ease-in-out"
+                                                        name="mode"
+                                                        value="fresh"
+                                                        checked={!isRefining}
+                                                        onChange={() => setIsRefining(false)}
+                                                    />
+                                                    <span className="ml-2 text-sm text-gray-700">Fresh Start</span>
+                                                </label>
+                                                <label className="inline-flex items-center">
+                                                    <input
+                                                        type="radio"
+                                                        className="form-radio h-4 w-4 text-indigo-600 transition duration-150 ease-in-out"
+                                                        name="mode"
+                                                        value="refine"
+                                                        checked={isRefining}
+                                                        onChange={() => setIsRefining(true)}
+                                                    />
+                                                    <span className="ml-2 text-sm text-gray-700">Refine Current</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    )}                                    
+                                    <div>
+                                        <label htmlFor="skill-description" className="block text-sm font-medium text-gray-700">
+                                            {isRefining ? "Refinement Instructions" : "Skill Description"}
+                                        </label>
+                                        <textarea
+                                            id="skill-description"
+                                            placeholder={isRefining ? "Describe what you'd like to change or add to the current flows" : "e.g., 'checking account balance', or 'adding a new contact using their name, handle, and number'"}
+                                            value={isRefining ? refinementInstructions : skillDescription}
+                                            onChange={(e) => isRefining ? setRefinementInstructions(e.target.value) : setSkillDescription(e.target.value)}
+                                            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                                            rows="4"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label htmlFor="api-key" className="block text-sm font-medium text-gray-700">
+                                            OpenAI API Key
+                                        </label>
+                                        <input
+                                            id="api-key"
+                                            type="password"
+                                            placeholder="Enter your OpenAI API key"
+                                            value={apiKey}
+                                            onChange={(e) => setApiKey(e.target.value)}
+                                            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <button
+                                            type="submit"
+                                            className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                                            disabled={isLoading}
+                                        >
+                                            {isLoading ? 'Generating...' : (isRefining ? 'Refine Rasa Skill' : 'Generate Rasa Skill')}
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        {error && (
+                            <div className="mt-4 bg-red-50 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                                <strong className="font-bold">Error: </strong>
+                                <span className="block sm:inline">{error}</span>
+                            </div>
+                        )}
+
+                        {generatedContent && (
+                            <div className="mt-8 bg-white shadow sm:rounded-lg">
+                                <div className="px-4 py-5 sm:p-6">
+                                    <h2 className="text-lg font-semibold text-gray-900 mb-4">Generated Rasa Skill</h2>
+                                    <div className="space-y-4">
+                                        {generatedContent.split('```').map((block, index) => {
+                                            if (index % 2 === 1) {
+                                                const [language, ...code] = block.split('\n');
+                                                return (
+                                                    <CodeBlock
+                                                        key={index}
+                                                        code={code.join('\n')}
+                                                        language={language.trim()}
+                                                    />
+                                                );
+                                            }
+                                            return <p key={index} className="text-sm text-gray-600">{block}</p>;
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<RasaSkillGenerator />, document.getElementById('root'));
+    </script>
+</body>
+</html>
