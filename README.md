@@ -1,6 +1,7 @@
 # Rasa Skill Generator
 
 This is a simple webpage which uses an LLM API to generate code for a CALM bot.
+Once you've generated the code for your skill, head over to the [quickstart](https://rasa.com/docs/rasa-pro/installation/quickstart) to try out your bot in the browser.
 
 https://github.com/user-attachments/assets/e5e32a36-6ec1-48e1-9cef-b60cebfd32c1
 
